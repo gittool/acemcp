@@ -1,7 +1,7 @@
 [project]
 name = "acemcp"
-version = "0.1.4"
-description = "MCP server for codebase indexing and semantic search with multi-encoding support and .gitignore integration"
+version = "0.1.5"
+description = "MCP server for codebase indexing and semantic search with multi-encoding support, .gitignore integration, enhanced security, and performance optimizations"
 readme = "README.md"
 authors = [
     { name = "wmymz", email = "wmymz@icloud.com" }
@@ -17,6 +17,10 @@ dependencies = [
     "toml>=0.10.2",
     "websockets>=14.1",
     "pathspec>=0.12.1",
+    "pydantic>=2.0.0",
+    "slowapi>=0.1.9",
+    "aiofiles>=24.1.0",
+    "tomli-w>=1.0.0",
 ]
 
 [project.scripts]
@@ -31,6 +35,10 @@ dev = [
     "pip>=25.3",
     "pre-commit>=4.3.0",
     "ruff>=0.14.3",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.8.0",
 ]
 
 [tool.ruff]
@@ -63,10 +71,8 @@ select = [
 mccabe = { max-complexity = 17 }
 
 ignore = [
-    "BLE001",
     "S110",
     "PLW0603",
-    "TRY300",
     "TRY004",
     "PLC0415",
     "TRY002",
@@ -86,8 +92,8 @@ ignore = [
     "PLC2701",
     "TRY301",
     "D205",
-    "D203", # 和D211不能同时启用，这里选择忽略D203
-    "D213", # 和D212不能同时启用，这里选择忽略D213
+    "D203", # 和D211不能同時启用，这里选择忽略D203
+    "D213", # 和D212不能同時启用，这里选择忽略D213
     "D107",
     "SIM108",
     "FIX002",
@@ -110,4 +116,19 @@ section-order = [
 # 允许在导入中使用别名（如 import pandas as pd）
 force-sort-within-sections = true
 split-on-trailing-comma = true  # 多行导入时在末尾添加逗号
-force-wrap-aliases = true       # 强制别名导入使用多行格式（如 import a as b 超过长度时换行）
+force-wrap-aliases = true       # 強制別名導入使用多行格式（如 import a as b 超过长度时换行）
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

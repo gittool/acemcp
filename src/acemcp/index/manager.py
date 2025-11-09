@@ -6,16 +6,71 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pathspec
 from loguru import logger
 
+from acemcp.constants import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_DELAY,
+    ENCODING_DETECTION_BYTES,
+    HTTP_CONNECT_TIMEOUT,
+    HTTP_READ_TIMEOUT,
+    HTTP_WRITE_TIMEOUT,
+    LARGE_FILE_THRESHOLD,
+    MAX_PATH_LENGTH,
+    MAX_QUERY_LENGTH,
+    SEARCH_TIMEOUT,
+    SUPPORTED_ENCODINGS,
+)
+from acemcp.utils import (
+    format_error_message,
+    is_retryable_error,
+    mask_token,
+    validate_path,
+)
+
+
+def detect_encoding(file_path: Path) -> str:
+    """ファイルのエンコーディングを検出します。
+
+    最初の数KBのみを読み込んで判定することでメモリ効率を改善します。
+
+    Args:
+        file_path: 検出するファイルのパス
+
+    Returns:
+        str: 検出されたエンコーディング名
+
+    Raises:
+        UnicodeDecodeError: すべてのエンコーディングで失敗した場合
+    """
+    # 大きなファイルの場合は最初の数KBのみで判定
+    file_size = file_path.stat().st_size
+    read_size = min(file_size, ENCODING_DETECTION_BYTES)
+
+    for encoding in SUPPORTED_ENCODINGS:
+        try:
+            with file_path.open("rb") as f:
+                sample = f.read(read_size)
+            sample.decode(encoding)
+            logger.debug(f"Detected encoding for {file_path}: {encoding}")
+            return encoding
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    # すべてのエンコーディングで失敗した場合はutf-8をデフォルトとする
+    logger.warning(f"Could not detect encoding for {file_path}, defaulting to utf-8")
+    return "utf-8"
+
 
 def read_file_with_encoding(file_path: Path) -> str:
     """Read file content with automatic encoding detection.
 
-    Tries multiple encodings in order: utf-8, gbk, gb2312, latin-1.
+    大きなファイルの場合は、エンコーディング検出を最初の数KBのみで行い、
+    メモリ効率を改善します。
 
     Args:
         file_path: Path to the file to read
@@ -24,27 +79,52 @@ def read_file_with_encoding(file_path: Path) -> str:
         File content as string
 
     Raises:
-        Exception: If file cannot be read with any supported encoding
+        OSError: ファイルの読み取りに失敗した場合
+        UnicodeDecodeError: エンコーディングの変換に失敗した場合
     """
-    encodings = ["utf-8", "gbk", "gb2312", "latin-1"]
-
-    for encoding in encodings:
-        try:
-            with file_path.open("r", encoding=encoding) as f:
-                content = f.read()
-            logger.debug(f"Successfully read {file_path} with encoding: {encoding}")
-            return content
-        except (UnicodeDecodeError, LookupError):
-            continue
-
-    # If all encodings fail, try with errors='ignore'
     try:
+        file_size = file_path.stat().st_size
+
+        # 大きなファイルの場合は、エンコーディングを先に検出
+        if file_size > LARGE_FILE_THRESHOLD:
+            encoding = detect_encoding(file_path)
+            try:
+                with file_path.open("r", encoding=encoding) as f:
+                    content = f.read()
+                logger.debug(
+                    f"Successfully read large file {file_path} ({file_size} bytes) with encoding: {encoding}"
+                )
+                return content
+            except UnicodeDecodeError:
+                # フォールバック: errors='ignore'を使用
+                with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                logger.warning(
+                    f"Read large file {file_path} with utf-8 and errors='ignore' (some characters may be lost)"
+                )
+                return content
+
+        # 小さなファイルの場合は従来通り
+        for encoding in SUPPORTED_ENCODINGS:
+            try:
+                with file_path.open("r", encoding=encoding) as f:
+                    content = f.read()
+                logger.debug(f"Successfully read {file_path} with encoding: {encoding}")
+                return content
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        # すべてのエンコーディングで失敗した場合
         with file_path.open("r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
         logger.warning(f"Read {file_path} with utf-8 and errors='ignore' (some characters may be lost)")
         return content
-    except Exception as e:
-        logger.error(f"Failed to read {file_path} with any encoding: {e}")
+
+    except OSError as e:
+        error_msg = format_error_message(
+            e, {"operation": "read_file", "path": str(file_path)}
+        )
+        logger.error(error_msg)
         raise
 
 
@@ -67,7 +147,19 @@ def calculate_blob_name(path: str, content: str) -> str:
 class IndexManager:
     """Manages codebase indexing and retrieval."""
 
-    def __init__(self, storage_path: Path, base_url: str, token: str, text_extensions: set[str], batch_size: int, max_lines_per_blob: int = 800, exclude_patterns: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        storage_path: Path,
+        base_url: str,
+        token: str,
+        text_extensions: set[str],
+        batch_size: int,
+        max_lines_per_blob: int = 800,
+        exclude_patterns: list[str] | None = None,
+        max_concurrent_uploads: int = 3,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: float = DEFAULT_RETRY_DELAY,
+    ) -> None:
         """Initialize index manager.
 
         Args:
@@ -78,6 +170,9 @@ class IndexManager:
             batch_size: Number of files to upload per batch
             max_lines_per_blob: Maximum lines per blob before splitting (default: 800)
             exclude_patterns: List of patterns to exclude from indexing (default: None)
+            max_concurrent_uploads: Maximum number of concurrent batch uploads (default: 3)
+            max_retries: Maximum number of retry attempts (default: DEFAULT_MAX_RETRIES)
+            retry_delay: Initial delay between retries in seconds (default: DEFAULT_RETRY_DELAY)
         """
         self.storage_path = storage_path
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -87,8 +182,34 @@ class IndexManager:
         self.batch_size = batch_size
         self.max_lines_per_blob = max_lines_per_blob
         self.exclude_patterns = exclude_patterns or []
+        self.max_concurrent_uploads = max_concurrent_uploads
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         self.projects_file = storage_path / "projects.json"
-        logger.info(f"IndexManager initialized with storage path: {storage_path}, batch_size: {batch_size}, max_lines_per_blob: {max_lines_per_blob}, exclude_patterns: {len(self.exclude_patterns)} patterns")
+        self._gitignore_cache: dict[str, pathspec.PathSpec | None] = {}
+        logger.info(
+            f"IndexManager initialized with storage path: {storage_path}, "
+            f"batch_size: {batch_size}, max_lines_per_blob: {max_lines_per_blob}, "
+            f"max_concurrent_uploads: {max_concurrent_uploads}, "
+            f"max_retries: {max_retries}, retry_delay: {retry_delay}s, "
+            f"exclude_patterns: {len(self.exclude_patterns)} patterns, "
+            f"token: {mask_token(token)}"
+        )
+
+    def _validate_project_path(self, project_root_path: str) -> Path:
+        """プロジェクトパスの安全性を検証します。
+
+        Args:
+            project_root_path: 検証するプロジェクトルートパス
+
+        Returns:
+            Path: 検証済みの正規化されたPathオブジェクト
+
+        Raises:
+            ValueError: パスが無効な場合
+            PermissionError: パスへのアクセス権限がない場合
+        """
+        return validate_path(project_root_path, must_exist=True, must_be_absolute=True)
 
     def _normalize_path(self, path: str) -> str:
         """Normalize path to use forward slashes.
@@ -98,11 +219,19 @@ class IndexManager:
 
         Returns:
             Normalized path string
+
+        Raises:
+            ValueError: パスが無効な場合
         """
-        return str(Path(path).resolve()).replace("\\", "/")
+        # パスの検証を追加
+        validated_path = self._validate_project_path(path)
+        return str(validated_path).replace("\\", "/")
 
     def _load_gitignore(self, root_path: Path) -> pathspec.PathSpec | None:
         """Load and parse .gitignore file from project root.
+
+        結果はキャッシュされ、同じプロジェクトで複数回呼び出されても
+        再読み込みしません。
 
         Args:
             root_path: Root path of the project
@@ -110,9 +239,15 @@ class IndexManager:
         Returns:
             PathSpec object if .gitignore exists, None otherwise
         """
+        # キャッシュをチェック
+        cache_key = str(root_path)
+        if cache_key in self._gitignore_cache:
+            return self._gitignore_cache[cache_key]
+
         gitignore_path = root_path / ".gitignore"
         if not gitignore_path.exists():
             logger.debug(f"No .gitignore found at {gitignore_path}")
+            self._gitignore_cache[cache_key] = None
             return None
 
         try:
@@ -120,18 +255,27 @@ class IndexManager:
                 patterns = f.read().splitlines()
             spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
             logger.info(f"Loaded .gitignore with {len(patterns)} patterns from {gitignore_path}")
+            self._gitignore_cache[cache_key] = spec
             return spec
-        except Exception as e:
+        except (OSError, UnicodeDecodeError) as e:
             logger.warning(f"Failed to load .gitignore from {gitignore_path}: {e}")
+            self._gitignore_cache[cache_key] = None
             return None
 
-    async def _retry_request(self, func, max_retries: int = 3, retry_delay: float = 1.0, *args, **kwargs):
+    async def _retry_request(
+        self,
+        func,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: float = DEFAULT_RETRY_DELAY,
+        *args,
+        **kwargs,
+    ) -> Any:
         """Retry an async function with exponential backoff.
 
         Args:
             func: Async function to retry
-            max_retries: Maximum number of retry attempts (default: 3)
-            retry_delay: Initial delay between retries in seconds (default: 1.0)
+            max_retries: Maximum number of retry attempts
+            retry_delay: Initial delay between retries in seconds
             *args: Positional arguments to pass to func
             **kwargs: Keyword arguments to pass to func
 
@@ -146,20 +290,28 @@ class IndexManager:
         for attempt in range(max_retries):
             try:
                 return await func(*args, **kwargs)
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadTimeout) as e:
+            except Exception as e:
                 last_exception = e
+
+                # リトライ可能なエラーかチェック
+                if not is_retryable_error(e):
+                    logger.error(f"Non-retryable error: {e}")
+                    raise
+
                 if attempt < max_retries - 1:
-                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                    logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
+                    wait_time = retry_delay * (2**attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                        f"Retrying in {wait_time}s..."
+                    )
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error(f"Request failed after {max_retries} attempts: {e}")
-            except Exception as e:
-                # For non-retryable errors, raise immediately
-                logger.error(f"Non-retryable error: {e}")
-                raise
 
-        raise last_exception
+        if last_exception:
+            raise last_exception
+        msg = "Retry failed without exception"
+        raise RuntimeError(msg)
 
     def _should_exclude(self, path: Path, root_path: Path, gitignore_spec: pathspec.PathSpec | None = None) -> bool:
         """Check if a path should be excluded based on exclude patterns and .gitignore.
@@ -217,11 +369,29 @@ class IndexManager:
         """
         if not self.projects_file.exists():
             return {}
+
         try:
             with self.projects_file.open("r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            logger.exception("Failed to load projects data")
+        except json.JSONDecodeError as e:
+            error_msg = format_error_message(
+                e,
+                {
+                    "operation": "load_projects",
+                    "file": str(self.projects_file),
+                },
+            )
+            logger.error(error_msg)
+            return {}
+        except OSError as e:
+            error_msg = format_error_message(
+                e,
+                {
+                    "operation": "load_projects",
+                    "file": str(self.projects_file),
+                },
+            )
+            logger.error(error_msg)
             return {}
 
     def _save_projects(self, projects: dict[str, list[str]]) -> None:
@@ -229,12 +399,24 @@ class IndexManager:
 
         Args:
             projects: Dictionary mapping normalized project_root_path to blob_names
+
+        Raises:
+            OSError: ファイルの書き込みに失敗した場合
+            TypeError: データのシリアライズに失敗した場合
         """
         try:
             with self.projects_file.open("w", encoding="utf-8") as f:
                 json.dump(projects, f, indent=2, ensure_ascii=False)
-        except Exception:
-            logger.exception("Failed to save projects data")
+        except (OSError, TypeError) as e:
+            error_msg = format_error_message(
+                e,
+                {
+                    "operation": "save_projects",
+                    "file": str(self.projects_file),
+                    "project_count": len(projects),
+                },
+            )
+            logger.error(error_msg)
             raise
 
     def _split_file_content(self, path: str, content: str) -> list[dict[str, str]]:
@@ -279,6 +461,10 @@ class IndexManager:
 
         Returns:
             List of blobs with path and content (large files may be split into multiple blobs)
+
+        Raises:
+            FileNotFoundError: プロジェクトルートパスが存在しない場合
+            OSError: ファイルシステムの操作に失敗した場合
         """
         blobs = []
         excluded_count = 0
@@ -288,47 +474,61 @@ class IndexManager:
             msg = f"Project root path does not exist: {project_root_path}"
             raise FileNotFoundError(msg)
 
-        # Load .gitignore if exists
+        # Load .gitignore if exists (キャッシュされる)
         gitignore_spec = self._load_gitignore(root_path)
 
-        for dirpath, dirnames, filenames in os.walk(root_path):
-            current_dir = Path(dirpath)
+        try:
+            for dirpath, dirnames, filenames in os.walk(root_path):
+                current_dir = Path(dirpath)
 
-            # Filter out excluded directories to prevent os.walk from descending into them
-            dirnames[:] = [
-                d for d in dirnames
-                if not self._should_exclude(current_dir / d, root_path, gitignore_spec)
-            ]
+                # Filter out excluded directories to prevent os.walk from descending into them
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if not self._should_exclude(current_dir / d, root_path, gitignore_spec)
+                ]
 
-            for filename in filenames:
-                file_path = current_dir / filename
+                for filename in filenames:
+                    file_path = current_dir / filename
 
-                # Check if file should be excluded
-                if self._should_exclude(file_path, root_path, gitignore_spec):
-                    excluded_count += 1
-                    logger.debug(f"Excluded file: {file_path.relative_to(root_path)}")
-                    continue
+                    # Check if file should be excluded
+                    if self._should_exclude(file_path, root_path, gitignore_spec):
+                        excluded_count += 1
+                        logger.debug(f"Excluded file: {file_path.relative_to(root_path)}")
+                        continue
 
-                if file_path.suffix.lower() not in self.text_extensions:
-                    continue
+                    if file_path.suffix.lower() not in self.text_extensions:
+                        continue
 
-                try:
-                    relative_path = file_path.relative_to(root_path)
-                    content = read_file_with_encoding(file_path)
+                    try:
+                        relative_path = file_path.relative_to(root_path)
+                        content = read_file_with_encoding(file_path)
 
-                    # Split file if necessary
-                    file_blobs = self._split_file_content(str(relative_path), content)
-                    blobs.extend(file_blobs)
+                        # Split file if necessary
+                        file_blobs = self._split_file_content(str(relative_path), content)
+                        blobs.extend(file_blobs)
 
-                    logger.debug(f"Collected file: {relative_path} ({len(file_blobs)} blob(s))")
-                except Exception:
-                    logger.warning(f"Failed to read file: {file_path}")
-                    continue
+                        logger.debug(f"Collected file: {relative_path} ({len(file_blobs)} blob(s))")
+                    except (OSError, UnicodeDecodeError) as e:
+                        logger.warning(
+                            f"Failed to read file {file_path}: {e.__class__.__name__}: {e}"
+                        )
+                        continue
 
-        logger.info(f"Collected {len(blobs)} blobs from {project_root_path} (excluded {excluded_count} files/directories)")
+        except OSError as e:
+            error_msg = format_error_message(
+                e, {"operation": "collect_files", "path": project_root_path}
+            )
+            logger.error(error_msg)
+            raise
+
+        logger.info(
+            f"Collected {len(blobs)} blobs from {project_root_path} "
+            f"(excluded {excluded_count} files/directories)"
+        )
         return blobs
 
-    async def index_project(self, project_root_path: str) -> dict[str, str]:
+    async def index_project(self, project_root_path: str) -> dict[str, Any]:
         """Index a code project with incremental indexing support.
 
         Args:
@@ -336,7 +536,19 @@ class IndexManager:
 
         Returns:
             Result dictionary with status and message
+
+        Raises:
+            ValueError: 入力が無効な場合
         """
+        # 入力バリデーション
+        if not project_root_path or not project_root_path.strip():
+            msg = "project_root_path が空です"
+            raise ValueError(msg)
+
+        if len(project_root_path) > MAX_PATH_LENGTH:
+            msg = f"project_root_path が長すぎます（最大{MAX_PATH_LENGTH}文字）"
+            raise ValueError(msg)
+
         normalized_path = self._normalize_path(project_root_path)
         logger.info(f"Indexing project from {normalized_path}")
 
@@ -377,47 +589,98 @@ class IndexManager:
 
             if blobs_to_upload:
                 total_batches = (len(blobs_to_upload) + self.batch_size - 1) // self.batch_size
-                logger.info(f"Uploading {len(blobs_to_upload)} new blobs in {total_batches} batches (batch_size={self.batch_size})")
+                logger.info(
+                    f"Uploading {len(blobs_to_upload)} new blobs in {total_batches} batches "
+                    f"(batch_size={self.batch_size}, max_concurrent={self.max_concurrent_uploads})"
+                )
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                # 細かいタイムアウト設定
+                timeout = httpx.Timeout(
+                    connect=HTTP_CONNECT_TIMEOUT,
+                    read=HTTP_READ_TIMEOUT,
+                    write=HTTP_WRITE_TIMEOUT,
+                    pool=None,
+                )
+
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    # セマフォで同時実行数を制限
+                    semaphore = asyncio.Semaphore(self.max_concurrent_uploads)
+
+                    async def upload_batch(batch_idx: int, batch_blobs: list[dict[str, str]]) -> tuple[int, list[str] | None]:
+                        """バッチをアップロードします。
+
+                        Returns:
+                            tuple: (batch_idx, blob_names or None if failed)
+                        """
+                        async with semaphore:
+                            logger.info(
+                                f"Uploading batch {batch_idx + 1}/{total_batches} ({len(batch_blobs)} blobs)"
+                            )
+
+                            try:
+                                async def do_upload():
+                                    payload = {"blobs": batch_blobs}
+                                    response = await client.post(
+                                        f"{self.base_url}/batch-upload",
+                                        headers={"Authorization": f"Bearer {self.token}"},
+                                        json=payload,
+                                    )
+                                    response.raise_for_status()
+                                    return response.json()
+
+                                result = await self._retry_request(
+                                    do_upload,
+                                    max_retries=self.max_retries,
+                                    retry_delay=self.retry_delay,
+                                )
+                                batch_blob_names = result.get("blob_names", [])
+
+                                if not batch_blob_names:
+                                    logger.warning(f"Batch {batch_idx + 1} returned no blob names")
+                                    return (batch_idx, None)
+
+                                logger.info(
+                                    f"Batch {batch_idx + 1} uploaded successfully, "
+                                    f"got {len(batch_blob_names)} blob names"
+                                )
+                                return (batch_idx, batch_blob_names)
+
+                            except Exception as e:
+                                logger.error(
+                                    f"Batch {batch_idx + 1} failed after retries: {e}. "
+                                    f"Continuing with next batch..."
+                                )
+                                return (batch_idx, None)
+
+                    # バッチを並行アップロード
+                    batch_tasks = []
                     for batch_idx in range(total_batches):
                         start_idx = batch_idx * self.batch_size
                         end_idx = min(start_idx + self.batch_size, len(blobs_to_upload))
                         batch_blobs = blobs_to_upload[start_idx:end_idx]
+                        batch_tasks.append(upload_batch(batch_idx, batch_blobs))
 
-                        logger.info(f"Uploading batch {batch_idx + 1}/{total_batches} ({len(batch_blobs)} blobs)")
+                    # すべてのバッチをアップロード
+                    results = await asyncio.gather(*batch_tasks, return_exceptions=True)
 
-                        try:
-                            async def upload_batch():
-                                payload = {"blobs": batch_blobs}
-                                response = await client.post(
-                                    f"{self.base_url}/batch-upload",
-                                    headers={"Authorization": f"Bearer {self.token}"},
-                                    json=payload,
-                                )
-                                response.raise_for_status()
-                                return response.json()
-
-                            # Retry up to 3 times with exponential backoff
-                            result = await self._retry_request(upload_batch, max_retries=3, retry_delay=1.0)
-
-                            batch_blob_names = result.get("blob_names", [])
-                            if not batch_blob_names:
-                                logger.warning(f"Batch {batch_idx + 1} returned no blob names")
-                                failed_batches.append(batch_idx + 1)
-                                continue
-
-                            uploaded_blob_names.extend(batch_blob_names)
-                            logger.info(f"Batch {batch_idx + 1} uploaded successfully, got {len(batch_blob_names)} blob names")
-
-                        except Exception as e:
-                            logger.error(f"Batch {batch_idx + 1} failed after retries: {e}. Continuing with next batch...")
-                            failed_batches.append(batch_idx + 1)
+                    # 結果を処理
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logger.error(f"Batch upload task failed with exception: {result}")
                             continue
+
+                        batch_idx, blob_names = result
+                        if blob_names is None:
+                            failed_batches.append(batch_idx + 1)
+                        else:
+                            uploaded_blob_names.extend(blob_names)
 
                 if not uploaded_blob_names and blobs_to_upload:
                     if failed_batches:
-                        return {"status": "error", "message": f"All batches failed. Failed batches: {failed_batches}"}
+                        return {
+                            "status": "error",
+                            "message": f"All batches failed. Failed batches: {failed_batches}",
+                        }
                     return {"status": "error", "message": "No blob names returned from API"}
             else:
                 logger.info("No new blobs to upload, all blobs already exist in index")
@@ -477,9 +740,29 @@ class IndexManager:
 
         Returns:
             Formatted retrieval result
+
+        Raises:
+            ValueError: 入力が無効な場合
         """
+        # 入力バリデーション
+        if not project_root_path or not project_root_path.strip():
+            msg = "project_root_path が空です"
+            raise ValueError(msg)
+
+        if len(project_root_path) > MAX_PATH_LENGTH:
+            msg = f"project_root_path が長すぎます（最大{MAX_PATH_LENGTH}文字）"
+            raise ValueError(msg)
+
+        if not query or not query.strip():
+            msg = "query が空です"
+            raise ValueError(msg)
+
+        if len(query) > MAX_QUERY_LENGTH:
+            msg = f"query が長すぎます（最大{MAX_QUERY_LENGTH}文字）"
+            raise ValueError(msg)
+
         normalized_path = self._normalize_path(project_root_path)
-        logger.info(f"Searching context in project {normalized_path} with query: {query}")
+        logger.info(f"Searching context in project {normalized_path} with query: {query[:100]}...")
 
         try:
             # Step 1: Automatically perform incremental indexing
@@ -519,7 +802,15 @@ class IndexManager:
                 "enable_commit_retrieval": False,
             }
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            # 検索用のタイムアウト設定（より長め）
+            search_timeout = httpx.Timeout(
+                connect=HTTP_CONNECT_TIMEOUT,
+                read=SEARCH_TIMEOUT,
+                write=HTTP_WRITE_TIMEOUT,
+                pool=None,
+            )
+
+            async with httpx.AsyncClient(timeout=search_timeout) as client:
                 async def search_request():
                     response = await client.post(
                         f"{self.base_url}/agents/codebase-retrieval",
@@ -529,12 +820,29 @@ class IndexManager:
                     response.raise_for_status()
                     return response.json()
 
-                # Retry up to 3 times with exponential backoff
                 try:
-                    result = await self._retry_request(search_request, max_retries=3, retry_delay=2.0)
+                    result = await self._retry_request(
+                        search_request,
+                        max_retries=self.max_retries,
+                        retry_delay=self.retry_delay,
+                    )
+                except httpx.HTTPStatusError as e:
+                    error_msg = format_error_message(
+                        e,
+                        {
+                            "operation": "search",
+                            "project": normalized_path,
+                            "status_code": e.response.status_code,
+                        },
+                    )
+                    logger.error(error_msg)
+                    return f"Error: Search request failed with status {e.response.status_code}. {e!s}"
                 except Exception as e:
-                    logger.error(f"Search request failed after retries: {e}")
-                    return f"Error: Search request failed after 3 retries. {e!s}"
+                    error_msg = format_error_message(
+                        e, {"operation": "search", "project": normalized_path}
+                    )
+                    logger.error(error_msg)
+                    return f"Error: Search request failed. {e!s}"
 
             formatted_retrieval = result.get("formatted_retrieval", "")
 
@@ -545,7 +853,22 @@ class IndexManager:
             logger.info(f"Search completed for project {normalized_path}")
             return formatted_retrieval
 
+        except FileNotFoundError as e:
+            error_msg = format_error_message(
+                e, {"operation": "search_context", "project": normalized_path}
+            )
+            logger.error(error_msg)
+            return f"Error: Project not found. {e!s}"
+        except PermissionError as e:
+            error_msg = format_error_message(
+                e, {"operation": "search_context", "project": normalized_path}
+            )
+            logger.error(error_msg)
+            return f"Error: Permission denied. {e!s}"
         except Exception as e:
-            logger.exception(f"Failed to search context in project {normalized_path}")
+            error_msg = format_error_message(
+                e, {"operation": "search_context", "project": normalized_path}
+            )
+            logger.error(error_msg)
             return f"Error: {e!s}"
 
