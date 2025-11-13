@@ -72,13 +72,15 @@ async def run_web_server(port: int) -> None:
         port: Port to run the web server on
     """
     web_app = create_app()
-    # Set log_level to "warning" to reduce WebSocket connection noise
+    # Configure uvicorn to use loguru through InterceptHandler
+    # This prevents uvicorn from polluting stdout (which breaks MCP stdio protocol)
     config_uvicorn = uvicorn.Config(
         web_app,
         host="0.0.0.0",
         port=port,
         log_level="warning",
-        access_log=False  # Disable access log to reduce noise
+        access_log=False,  # Disable access log to reduce noise
+        log_config=None,   # Disable default logging config to use our interceptor
     )
     server = uvicorn.Server(config_uvicorn)
     await server.serve()
@@ -130,7 +132,8 @@ def run() -> None:
         get_log_broadcaster()  # Initialize the broadcaster
 
     # Setup logging after log broadcaster is initialized
-    setup_logging()
+    # Intercept stdlib logging (uvicorn, fastapi) to prevent stdout pollution
+    setup_logging(intercept_stdlib=True)
 
     asyncio.run(main(base_url=args.base_url, token=args.token, web_port=args.web_port))
 

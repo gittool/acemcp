@@ -331,7 +331,23 @@ To enable the web interface, use the `--web-port` argument when starting the ser
 
 ## Recent Updates
 
-### Version 0.1.3 (Latest)
+### Version 0.1.5 (Latest)
+
+**New Features:**
+- ✨ **Logging System Optimization**: Redirect FastAPI/Uvicorn logs to loguru to prevent pollution of MCP stdio protocol
+- ✨ **Tool Debugging Interface**: Web management interface now includes tool listing and debugging functionality
+
+**Improvements:**
+- 🔧 **Log Output Control**: Removed console log output, only output to file to avoid interfering with stdio protocol
+- 🔧 **Standard Library Log Interception**: Use `InterceptHandler` to intercept all standard library logs
+- 🔧 **Web API Enhancement**: New `/api/tools` endpoint to list available tools
+
+**Technical Details:**
+- Implemented `InterceptHandler` class to intercept standard library logging
+- Configured uvicorn with `log_config=None` to disable default logging
+- All logs unified to output to `~/.acemcp/log/acemcp.log`
+
+### Version 0.1.4
 
 **New Features:**
 - ✨ **Multi-Encoding Support**: Automatic detection and handling of multiple file encodings (UTF-8, GBK, GB2312, Latin-1)

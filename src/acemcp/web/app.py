@@ -136,6 +136,27 @@ def create_app() -> FastAPI:
 
         return {"status": "running", "project_count": project_count, "storage_path": str(config.index_storage_path)}
 
+    @app.get("/api/tools")
+    async def list_tools() -> dict:
+        """List available tools for debugging.
+
+        Returns:
+            Dictionary containing available tools and their descriptions
+        """
+        return {
+            "tools": [
+                {
+                    "name": "search_context",
+                    "description": "Search for code context in indexed projects",
+                    "status": "stable",
+                    "parameters": {
+                        "project_root_path": "string (required) - Absolute path to project root",
+                        "query": "string (required) - Search query",
+                    },
+                },
+            ]
+        }
+
     @app.post("/api/tools/execute")
     async def execute_tool(tool_request: ToolRequest) -> dict:
         """Execute a tool for debugging.
