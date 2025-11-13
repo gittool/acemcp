@@ -6,7 +6,14 @@
 - [config.py](file://src/acemcp/config.py)
 - [manager.py](file://src/acemcp/index/manager.py)
 - [search_context.py](file://src/acemcp/tools/search_context.py)
+- [server.py](file://src/acemcp/server.py) - *Added tool discovery API*
 </cite>
+
+## 更新摘要
+**变更内容**   
+- 新增了 **GET /api/tools** 端点文档，用于工具发现和调试
+- 更新了文档来源列表，包含新增的 `server.py` 文件
+- 保持了现有API端点的文档结构和内容
 
 ## 目录
 1. [简介](#简介)
@@ -15,6 +22,7 @@
    2. [POST /api/config](#post-apiconfig)
    3. [GET /api/status](#get-apistatus)
    4. [POST /api/tools/execute](#post-apitoolsexecute)
+   5. [GET /api/tools](#get-apitools)
 3. [认证机制](#认证机制)
 4. [错误处理](#错误处理)
 5. [使用示例](#使用示例)
@@ -203,6 +211,46 @@
 - [app.py](file://src/acemcp/web/app.py#L138-L166)
 - [search_context.py](file://src/acemcp/tools/search_context.py#L11-L51)
 
+### GET /api/tools
+获取可用工具列表，支持工具发现和调试功能。
+
+**HTTP方法**: `GET`  
+**URL**: `/api/tools`  
+**认证要求**: 是（基于配置令牌）
+
+#### 请求
+- **请求头**: 
+  - `Authorization: Bearer <token>` - 使用配置中的令牌进行认证
+
+- **请求体**: 无
+
+#### 响应
+- **成功响应 (200)**: 返回可用工具列表及其元数据。
+
+```json
+{
+  "tools": [
+    {
+      "name": "search_context",
+      "description": "在已索引的项目中搜索代码上下文",
+      "status": "stable",
+      "parameters": {
+        "project_root_path": "字符串 (必需) - 项目根目录的绝对路径",
+        "query": "字符串 (必需) - 搜索查询"
+      }
+    }
+  ]
+}
+```
+
+- **错误响应**:
+  - `401 Unauthorized`: 未提供或无效的认证令牌
+  - `500 Internal Server Error`: 服务器内部错误
+
+**Section sources**
+- [app.py](file://src/acemcp/web/app.py#L138-L157)
+- [server.py](file://src/acemcp/server.py#L19-L45)
+
 ## 认证机制
 所有API端点都需要基于令牌的认证。客户端必须在HTTP请求头中包含`Authorization`字段，格式为`Bearer <token>`，其中`<token>`是配置文件中设置的认证令牌。该机制确保只有授权用户才能访问和修改服务器配置。令牌在配置更新时可以被修改，提供灵活的安全管理。
 
@@ -245,6 +293,10 @@ curl -X POST "http://localhost:8888/api/tools/execute" \
       "query": "搜索查询"
     }
   }'
+
+# 获取可用工具列表
+curl -X GET "http://localhost:8888/api/tools" \
+  -H "Authorization: Bearer your-token-here"
 ```
 
 ### Python httpx客户端示例
@@ -284,6 +336,13 @@ async def main():
                     "query": "搜索查询"
                 }
             }
+        )
+        print(response.json())
+        
+        # 获取可用工具列表
+        response = await client.get(
+            "http://localhost:8888/api/tools",
+            headers={"Authorization": "Bearer your-token-here"}
         )
         print(response.json())
 
