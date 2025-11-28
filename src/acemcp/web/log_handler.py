@@ -45,6 +45,7 @@ class LogBroadcaster:
 
         Args:
             queue: Client's asyncio queue
+
         """
         self.clients.append(queue)
 
@@ -53,6 +54,7 @@ class LogBroadcaster:
 
         Args:
             queue: Client's asyncio queue
+
         """
         if queue in self.clients:
             self.clients.remove(queue)
@@ -66,9 +68,9 @@ def get_log_broadcaster() -> LogBroadcaster:
 
     Returns:
         LogBroadcaster instance
+
     """
     global _broadcaster_instance  # noqa: PLW0603
     if _broadcaster_instance is None:
         _broadcaster_instance = LogBroadcaster()
     return _broadcaster_instance
-

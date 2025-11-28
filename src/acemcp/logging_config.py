@@ -20,6 +20,7 @@ class InterceptHandler(logging.Handler):
 
         Args:
             record: The log record to emit
+
         """
         # Get corresponding Loguru level if it exists
         try:
@@ -49,8 +50,9 @@ def setup_logging(intercept_stdlib: bool = False) -> None:
 
     Args:
         intercept_stdlib: If True, intercept standard library logging (uvicorn, fastapi, etc.)
+
     """
-    global _logging_configured, _console_handler_id, _file_handler_id  # noqa: PLW0603
+    global _logging_configured, _console_handler_id, _file_handler_id  # noqa: PLW0602
 
     if _logging_configured:
         return
@@ -85,10 +87,10 @@ def setup_logging(intercept_stdlib: bool = False) -> None:
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
         level="DEBUG",
         rotation="5 MB",  # Rotate when file reaches 5MB
-        retention=10,      # Keep at most 10 files
-        compression="zip", # Compress rotated files
+        retention=10,  # Keep at most 10 files
+        compression="zip",  # Compress rotated files
         encoding="utf-8",
-        enqueue=True,      # Thread-safe logging
+        enqueue=True,  # Thread-safe logging
     )
 
     # Intercept standard library logging if requested
@@ -102,4 +104,3 @@ def setup_logging(intercept_stdlib: bool = False) -> None:
 
     _logging_configured = True
     logger.info(f"Logging configured: log file at {log_file}")
-

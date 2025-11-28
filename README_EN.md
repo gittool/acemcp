@@ -316,22 +316,59 @@ The log files are automatically created on first run and require no manual confi
 The web management interface provides:
 - **Real-time server status** monitoring
 - **Live log streaming** via WebSocket
-- **Configuration viewing** (current settings)
-- **Project statistics** (number of indexed projects)
+- **Configuration management**: View and edit server configuration
+- **Token validation**: One-click API Key validation
+- **Project statistics**: Number of indexed projects
+- **Tool debugger**: Test and debug MCP tools directly from the web interface
 
 To enable the web interface, use the `--web-port` argument when starting the server.
 
 **Features:**
 - Real-time log display with auto-scroll
 - Server status and metrics
-- Configuration overview
+- Configuration overview and editing
 - Responsive design with Tailwind CSS
 - No build step required (uses CDN resources)
 - Intelligent WebSocket reconnection with exponential backoff
 
 ## Recent Updates
 
-### Version 0.1.5 (Latest)
+### Version 0.1.9
+
+**New Features:**
+  - Automatically detects if the web port is in use; if so, it reuses the web panel.
+
+**Improvements:**
+- [fix Google Antigravity MCP "invalid trailing data" error](https://github.com/qy527145/acemcp/pull/12)
+
+### Version 0.1.8
+
+**New Features:**
+- ✨ **Token Validation Feature**: Web management interface now includes API Key validation button
+  - Added "Validate Key" button in configuration section to instantly verify token validity
+  - Supports token validation in both view and edit modes
+  - Provides clear validation result feedback (success/failure messages)
+  - Helps users quickly diagnose API configuration issues
+
+**Technical Details:**
+- New `/api/validate-token` API endpoint
+- Validates token validity by sending test requests to the API
+- Comprehensive error handling: 401 Unauthorized, 403 Forbidden, timeout, connection errors, etc.
+- Supports both English and Chinese interfaces
+
+### Version 0.1.7
+
+**Improvements:**
+- 🔧 **API Request Optimization**: https://github.com/qy527145/acemcp/pull/6
+- 🔧 **Proxy Environment Compatibility**: Added httpx[socks] extension dependency to fix errors in proxy environments
+
+### Version 0.1.6
+
+**Improvements:**
+- 🔧 **API Request Optimization**: Improved request handling
+- 🔧 **Proxy Environment Support**: Better compatibility with proxy configurations
+
+### Version 0.1.5
 
 **New Features:**
 - ✨ **Logging System Optimization**: Redirect FastAPI/Uvicorn logs to loguru to prevent pollution of MCP stdio protocol

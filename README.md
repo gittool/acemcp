@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/qy527145-acemcp-badge.png)](https://mseep.ai/app/qy527145-acemcp)
+
 简体中文 | [English](./README_EN.md)
 
 # Acemcp
@@ -316,22 +318,53 @@ build/
 Web 管理界面提供：
 - **实时服务器状态**监控
 - **实时日志流**通过 WebSocket
-- **配置查看**（当前设置）
-- **项目统计**（已索引项目数量）
+- **配置管理**：查看和编辑服务器配置
+- **Token 验证**：一键检测 API Key 是否有效
+- **项目统计**：已索引项目数量
+- **工具调试器**：直接从 Web 界面测试和调试 MCP 工具
 
 要启用 Web 界面，在启动服务器时使用 `--web-port` 参数。
 
 **功能：**
 - 带自动滚动的实时日志显示
 - 服务器状态和指标
-- 配置概览
+- 配置概览和编辑
 - 使用 Tailwind CSS 的响应式设计
 - 无需构建步骤（使用 CDN 资源）
 - 具有指数退避的智能 WebSocket 重连
 
 ## 最近更新
 
-### 版本 0.1.5（最新）
+### 版本 0.1.9
+
+**新特性：**
+  - 自动判断web-port端口是否占用，如果占用会复用web面板
+
+**改进：**
+- [修复Antigravity兼容性错误](https://github.com/qy527145/acemcp/pull/12)
+
+### 版本 0.1.8
+
+**新特性：**
+- ✨ **Token 验证功能**：Web 管理界面新增 API Key 检测按钮
+  - 在配置部分添加"检测 Key"按钮，可即时验证 token 是否有效
+  - 支持在查看模式和编辑模式下验证 token
+  - 提供清晰的验证结果反馈（成功/失败消息）
+  - 帮助用户快速诊断 API 配置问题
+
+**技术细节：**
+- 新增 `/api/validate-token` API 端点
+- 通过向 API 发送测试请求验证 token 有效性
+- 完善的错误处理：401 未授权、403 禁止访问、超时、连接错误等
+- 支持中英文界面
+
+### 版本 0.1.7
+
+**改进：**
+- 🔧 **接口请求优化**：https://github.com/qy527145/acemcp/pull/6
+- 🔧 **兼容代理环境**：添加httpx[socks]扩展依赖，解决代理环境下出错的bug
+
+### 版本 0.1.5
 
 **新特性：**
 - ✨ **日志系统优化**：将 FastAPI/Uvicorn 日志重定向到 loguru，防止污染 MCP stdio 协议

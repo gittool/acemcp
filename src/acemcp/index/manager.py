@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 
 import httpx
-import pathspec
 from loguru import logger
+import pathspec
 
 
 def read_file_with_encoding(file_path: Path) -> str:
@@ -25,6 +25,7 @@ def read_file_with_encoding(file_path: Path) -> str:
 
     Raises:
         Exception: If file cannot be read with any supported encoding
+
     """
     encodings = ["utf-8", "gbk", "gb2312", "latin-1"]
 
@@ -57,6 +58,7 @@ def calculate_blob_name(path: str, content: str) -> str:
 
     Returns:
         64-character hexadecimal string (SHA-256 hash value)
+
     """
     hasher = hashlib.sha256()
     hasher.update(path.encode("utf-8"))
@@ -78,6 +80,7 @@ class IndexManager:
             batch_size: Number of files to upload per batch
             max_lines_per_blob: Maximum lines per blob before splitting (default: 800)
             exclude_patterns: List of patterns to exclude from indexing (default: None)
+
         """
         self.storage_path = storage_path
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -88,7 +91,26 @@ class IndexManager:
         self.max_lines_per_blob = max_lines_per_blob
         self.exclude_patterns = exclude_patterns or []
         self.projects_file = storage_path / "projects.json"
+        self._client: httpx.AsyncClient | None = None
         logger.info(f"IndexManager initialized with storage path: {storage_path}, batch_size: {batch_size}, max_lines_per_blob: {max_lines_per_blob}, exclude_patterns: {len(self.exclude_patterns)} patterns")
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Get or create httpx AsyncClient instance.
+
+        Returns:
+            httpx.AsyncClient instance
+
+        """
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=60.0)
+            logger.debug("Created new httpx.AsyncClient")
+        return self._client
+
+    async def close(self) -> None:
+        """Close httpx client and release resources."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            logger.debug("Closed httpx.AsyncClient")
 
     def _normalize_path(self, path: str) -> str:
         """Normalize path to use forward slashes.
@@ -98,6 +120,7 @@ class IndexManager:
 
         Returns:
             Normalized path string
+
         """
         return str(Path(path).resolve()).replace("\\", "/")
 
@@ -109,6 +132,7 @@ class IndexManager:
 
         Returns:
             PathSpec object if .gitignore exists, None otherwise
+
         """
         gitignore_path = root_path / ".gitignore"
         if not gitignore_path.exists():
@@ -140,6 +164,7 @@ class IndexManager:
 
         Raises:
             Exception: Last exception if all retries fail
+
         """
         last_exception = None
 
@@ -149,7 +174,7 @@ class IndexManager:
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadTimeout) as e:
                 last_exception = e
                 if attempt < max_retries - 1:
-                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    wait_time = retry_delay * (2**attempt)  # Exponential backoff
                     logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
                 else:
@@ -171,6 +196,7 @@ class IndexManager:
 
         Returns:
             True if path should be excluded, False otherwise
+
         """
         try:
             relative_path = path.relative_to(root_path)
@@ -214,6 +240,7 @@ class IndexManager:
 
         Returns:
             Dictionary mapping normalized project_root_path to blob_names
+
         """
         if not self.projects_file.exists():
             return {}
@@ -229,6 +256,7 @@ class IndexManager:
 
         Args:
             projects: Dictionary mapping normalized project_root_path to blob_names
+
         """
         try:
             with self.projects_file.open("w", encoding="utf-8") as f:
@@ -246,6 +274,7 @@ class IndexManager:
 
         Returns:
             List of blobs (one or more if split)
+
         """
         lines = content.splitlines(keepends=True)
         total_lines = len(lines)
@@ -279,6 +308,7 @@ class IndexManager:
 
         Returns:
             List of blobs with path and content (large files may be split into multiple blobs)
+
         """
         blobs = []
         excluded_count = 0
@@ -295,10 +325,7 @@ class IndexManager:
             current_dir = Path(dirpath)
 
             # Filter out excluded directories to prevent os.walk from descending into them
-            dirnames[:] = [
-                d for d in dirnames
-                if not self._should_exclude(current_dir / d, root_path, gitignore_spec)
-            ]
+            dirnames[:] = [d for d in dirnames if not self._should_exclude(current_dir / d, root_path, gitignore_spec)]
 
             for filename in filenames:
                 file_path = current_dir / filename
@@ -336,6 +363,7 @@ class IndexManager:
 
         Returns:
             Result dictionary with status and message
+
         """
         normalized_path = self._normalize_path(project_root_path)
         logger.info(f"Indexing project from {normalized_path}")
@@ -364,12 +392,7 @@ class IndexManager:
             # Blobs that need to be uploaded
             blobs_to_upload = [blob_hash_map[h] for h in new_hashes]
 
-            logger.info(
-                f"Incremental indexing: total={len(blobs)}, "
-                f"existing={len(existing_hashes)}, "
-                f"new={len(new_hashes)}, "
-                f"to_upload={len(blobs_to_upload)}"
-            )
+            logger.info(f"Incremental indexing: total={len(blobs)}, existing={len(existing_hashes)}, new={len(new_hashes)}, to_upload={len(blobs_to_upload)}")
 
             # Upload only new blobs
             uploaded_blob_names = []
@@ -379,41 +402,42 @@ class IndexManager:
                 total_batches = (len(blobs_to_upload) + self.batch_size - 1) // self.batch_size
                 logger.info(f"Uploading {len(blobs_to_upload)} new blobs in {total_batches} batches (batch_size={self.batch_size})")
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    for batch_idx in range(total_batches):
-                        start_idx = batch_idx * self.batch_size
-                        end_idx = min(start_idx + self.batch_size, len(blobs_to_upload))
-                        batch_blobs = blobs_to_upload[start_idx:end_idx]
+                client = self._get_client()
+                for batch_idx in range(total_batches):
+                    start_idx = batch_idx * self.batch_size
+                    end_idx = min(start_idx + self.batch_size, len(blobs_to_upload))
+                    batch_blobs = blobs_to_upload[start_idx:end_idx]
 
-                        logger.info(f"Uploading batch {batch_idx + 1}/{total_batches} ({len(batch_blobs)} blobs)")
+                    logger.info(f"Uploading batch {batch_idx + 1}/{total_batches} ({len(batch_blobs)} blobs)")
 
-                        try:
-                            async def upload_batch():
-                                payload = {"blobs": batch_blobs}
-                                response = await client.post(
-                                    f"{self.base_url}/batch-upload",
-                                    headers={"Authorization": f"Bearer {self.token}"},
-                                    json=payload,
-                                )
-                                response.raise_for_status()
-                                return response.json()
+                    try:
 
-                            # Retry up to 3 times with exponential backoff
-                            result = await self._retry_request(upload_batch, max_retries=3, retry_delay=1.0)
+                        async def upload_batch():
+                            payload = {"blobs": batch_blobs}  # noqa: B023
+                            response = await client.post(
+                                f"{self.base_url}/batch-upload",
+                                headers={"Authorization": f"Bearer {self.token}"},
+                                json=payload,
+                            )
+                            response.raise_for_status()
+                            return response.json()
 
-                            batch_blob_names = result.get("blob_names", [])
-                            if not batch_blob_names:
-                                logger.warning(f"Batch {batch_idx + 1} returned no blob names")
-                                failed_batches.append(batch_idx + 1)
-                                continue
+                        # Retry up to 3 times with exponential backoff
+                        result = await self._retry_request(upload_batch, max_retries=3, retry_delay=1.0)
 
-                            uploaded_blob_names.extend(batch_blob_names)
-                            logger.info(f"Batch {batch_idx + 1} uploaded successfully, got {len(batch_blob_names)} blob names")
-
-                        except Exception as e:
-                            logger.error(f"Batch {batch_idx + 1} failed after retries: {e}. Continuing with next batch...")
+                        batch_blob_names = result.get("blob_names", [])
+                        if not batch_blob_names:
+                            logger.warning(f"Batch {batch_idx + 1} returned no blob names")
                             failed_batches.append(batch_idx + 1)
                             continue
+
+                        uploaded_blob_names.extend(batch_blob_names)
+                        logger.info(f"Batch {batch_idx + 1} uploaded successfully, got {len(batch_blob_names)} blob names")
+
+                    except Exception as e:
+                        logger.error(f"Batch {batch_idx + 1} failed after retries: {e}. Continuing with next batch...")
+                        failed_batches.append(batch_idx + 1)
+                        continue
 
                 if not uploaded_blob_names and blobs_to_upload:
                     if failed_batches:
@@ -434,11 +458,7 @@ class IndexManager:
             if blobs_to_upload:
                 total_batches = (len(blobs_to_upload) + self.batch_size - 1) // self.batch_size
                 success_batches = total_batches - len(failed_batches)
-                message = (
-                    f"Project indexed with {len(all_blob_names)} total blobs "
-                    f"(existing: {len(existing_hashes)}, new: {len(uploaded_blob_names)}, "
-                    f"batches: {success_batches}/{total_batches} successful)"
-                )
+                message = f"Project indexed with {len(all_blob_names)} total blobs (existing: {len(existing_hashes)}, new: {len(uploaded_blob_names)}, batches: {success_batches}/{total_batches} successful)"
             else:
                 message = f"Project indexed with {len(all_blob_names)} total blobs (all existing, no upload needed)"
 
@@ -477,6 +497,7 @@ class IndexManager:
 
         Returns:
             Formatted retrieval result
+
         """
         normalized_path = self._normalize_path(project_root_path)
         logger.info(f"Searching context in project {normalized_path} with query: {query}")
@@ -492,10 +513,7 @@ class IndexManager:
             # Log indexing stats
             if "stats" in index_result:
                 stats = index_result["stats"]
-                logger.info(
-                    f"Auto-indexing completed: total={stats['total_blobs']}, "
-                    f"existing={stats['existing_blobs']}, new={stats['new_blobs']}"
-                )
+                logger.info(f"Auto-indexing completed: total={stats['total_blobs']}, existing={stats['existing_blobs']}, new={stats['new_blobs']}")
 
             # Step 2: Load indexed blob names
             projects = self._load_projects()
@@ -519,22 +537,23 @@ class IndexManager:
                 "enable_commit_retrieval": False,
             }
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                async def search_request():
-                    response = await client.post(
-                        f"{self.base_url}/agents/codebase-retrieval",
-                        headers={"Authorization": f"Bearer {self.token}"},
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    return response.json()
+            client = self._get_client()
 
-                # Retry up to 3 times with exponential backoff
-                try:
-                    result = await self._retry_request(search_request, max_retries=3, retry_delay=2.0)
-                except Exception as e:
-                    logger.error(f"Search request failed after retries: {e}")
-                    return f"Error: Search request failed after 3 retries. {e!s}"
+            async def search_request():
+                response = await client.post(
+                    f"{self.base_url}/agents/codebase-retrieval",
+                    headers={"Authorization": f"Bearer {self.token}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+
+            # Retry up to 3 times with exponential backoff
+            try:
+                result = await self._retry_request(search_request, max_retries=3, retry_delay=2.0)
+            except Exception as e:
+                logger.error(f"Search request failed after retries: {e}")
+                return f"Error: Search request failed after 3 retries. {e!s}"
 
             formatted_retrieval = result.get("formatted_retrieval", "")
 
@@ -548,4 +567,3 @@ class IndexManager:
         except Exception as e:
             logger.exception(f"Failed to search context in project {normalized_path}")
             return f"Error: {e!s}"
-

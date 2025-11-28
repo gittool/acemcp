@@ -1,10 +1,10 @@
 """Configuration management for acemcp MCP server."""
 
-import toml
 from pathlib import Path
 
 from dynaconf import Dynaconf
 from loguru import logger
+import toml
 
 # Default configuration values
 DEFAULT_CONFIG = {
@@ -88,6 +88,7 @@ def _ensure_user_config() -> Path:
 
     Returns:
         Path to user configuration file
+
     """
     if not USER_CONFIG_DIR.exists():
         USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,6 +126,7 @@ class Config:
         Args:
             base_url: Override BASE_URL from command line
             token: Override TOKEN from command line
+
         """
         self._cli_base_url = base_url
         self._cli_token = token
@@ -173,6 +175,7 @@ def get_config() -> Config:
 
     Returns:
         Config instance
+
     """
     global _config_instance  # noqa: PLW0603
     if _config_instance is None:
@@ -189,6 +192,7 @@ def init_config(base_url: str | None = None, token: str | None = None) -> Config
 
     Returns:
         Config instance
+
     """
     global _config_instance  # noqa: PLW0603
     _config_instance = Config(base_url=base_url, token=token)
@@ -196,4 +200,3 @@ def init_config(base_url: str | None = None, token: str | None = None) -> Config
 
 
 config = get_config()
-

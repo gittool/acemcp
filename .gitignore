@@ -13,3 +13,6 @@ venv
 # ai
 .cunzhi-memory/
 .kilocode/
+
+# IDE
+.idea

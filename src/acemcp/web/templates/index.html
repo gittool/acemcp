@@ -54,8 +54,15 @@
                         <p class="mt-1 text-sm text-gray-900" x-text="config.base_url"></p>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700" x-text="t('token')"></label>
+                        <div class="flex justify-between items-center">
+                            <label class="block text-sm font-medium text-gray-700" x-text="t('token')"></label>
+                            <button @click="validateToken()" :disabled="tokenValidating" class="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-xs disabled:bg-gray-400 disabled:cursor-not-allowed">
+                                <span x-show="!tokenValidating" x-text="t('validate_token')"></span>
+                                <span x-show="tokenValidating" x-text="t('validating')"></span>
+                            </button>
+                        </div>
                         <p class="mt-1 text-sm text-gray-900" x-text="config.token"></p>
+                        <p x-show="tokenValidationMessage" x-text="tokenValidationMessage" class="mt-1 text-xs" :class="tokenValidationResult === 'success' ? 'text-green-600' : 'text-red-600'"></p>
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700" x-text="t('batch_size')"></label>
@@ -81,8 +88,15 @@
                         <input type="text" x-model="editConfig.base_url" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-sm p-2 border">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700" x-text="t('token')"></label>
+                        <div class="flex justify-between items-center mb-1">
+                            <label class="block text-sm font-medium text-gray-700" x-text="t('token')"></label>
+                            <button type="button" @click="validateToken(true)" :disabled="tokenValidating" class="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-xs disabled:bg-gray-400 disabled:cursor-not-allowed">
+                                <span x-show="!tokenValidating" x-text="t('validate_token')"></span>
+                                <span x-show="tokenValidating" x-text="t('validating')"></span>
+                            </button>
+                        </div>
                         <input type="text" x-model="editConfig.token" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-sm p-2 border">
+                        <p x-show="tokenValidationMessage" x-text="tokenValidationMessage" class="mt-1 text-xs" :class="tokenValidationResult === 'success' ? 'text-green-600' : 'text-red-600'"></p>
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700" x-text="t('batch_size')"></label>
@@ -222,7 +236,11 @@
                 execute_tool: 'Execute Tool',
                 executing: 'Executing...',
                 tool_result: 'Tool Result',
-                no_result: 'No result yet. Execute a tool to see the output.'
+                no_result: 'No result yet. Execute a tool to see the output.',
+                validate_token: 'Validate Key',
+                validating: 'Validating...',
+                token_valid: 'Token is valid!',
+                token_invalid: 'Token is invalid'
             },
             zh: {
                 title: 'Acemcp 管理',
@@ -260,7 +278,11 @@
                 execute_tool: '执行工具',
                 executing: '执行中...',
                 tool_result: '工具结果',
-                no_result: '暂无结果。执行工具以查看输出。'
+                no_result: '暂无结果。执行工具以查看输出。',
+                validate_token: '检测 Key',
+                validating: '检测中...',
+                token_valid: 'Token 有效！',
+                token_invalid: 'Token 无效'
             }
         };
 
@@ -295,6 +317,10 @@
                 toolResult: '',
                 toolError: '',
                 toolExecuting: false,
+                // Token validation state
+                tokenValidating: false,
+                tokenValidationResult: '',
+                tokenValidationMessage: '',
 
                 t(key) {
                     return translations[this.lang][key] || key;
@@ -543,6 +569,50 @@
                     const div = document.createElement('div');
                     div.textContent = text;
                     return div.innerHTML;
+                },
+
+                async validateToken(useEditConfig = false) {
+                    try {
+                        this.tokenValidating = true;
+                        this.tokenValidationResult = '';
+                        this.tokenValidationMessage = '';
+
+                        const payload = {};
+
+                        // Use edit config values if in edit mode, otherwise use current config
+                        if (useEditConfig) {
+                            if (this.editConfig.base_url) {
+                                payload.base_url = this.editConfig.base_url;
+                            }
+                            if (this.editConfig.token) {
+                                payload.token = this.editConfig.token;
+                            }
+                        }
+
+                        const response = await fetch('/api/validate-token', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(payload)
+                        });
+
+                        const result = await response.json();
+
+                        if (result.status === 'success') {
+                            this.tokenValidationResult = 'success';
+                            this.tokenValidationMessage = result.message;
+                        } else {
+                            this.tokenValidationResult = 'error';
+                            this.tokenValidationMessage = result.message || 'Validation failed';
+                        }
+                    } catch (error) {
+                        console.error('Failed to validate token:', error);
+                        this.tokenValidationResult = 'error';
+                        this.tokenValidationMessage = 'Failed to validate token: ' + error.message;
+                    } finally {
+                        this.tokenValidating = false;
+                    }
                 }
             };
         }

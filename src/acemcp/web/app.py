@@ -1,8 +1,6 @@
 """FastAPI web application for MCP server management."""
 
 import asyncio
-import json
-import toml
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -10,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
+import toml
 
 from acemcp.config import get_config
 from acemcp.web.log_handler import get_log_broadcaster
@@ -41,6 +40,7 @@ def create_app() -> FastAPI:
 
     Returns:
         FastAPI application instance
+
     """
     app = FastAPI(title="Acemcp Management", description="MCP Server Management Interface", version="0.1.0")
 
@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
 
         Returns:
             Updated configuration
+
         """
         try:
             from acemcp.config import USER_CONFIG_FILE
@@ -136,12 +137,68 @@ def create_app() -> FastAPI:
 
         return {"status": "running", "project_count": project_count, "storage_path": str(config.index_storage_path)}
 
+    @app.post("/api/validate-token")
+    async def validate_token(config_update: ConfigUpdate) -> dict:
+        """Validate token by making a test request to the API.
+
+        Args:
+            config_update: Configuration with base_url and token to validate
+
+        Returns:
+            Validation result with status and message
+
+        """
+        try:
+            import httpx
+
+            # Use provided values or fall back to current config
+            config = get_config()
+            base_url = config_update.base_url or config.base_url
+            token = config_update.token or config.token
+
+            if not base_url or not token:
+                return {"status": "error", "message": "BASE_URL and TOKEN are required"}
+
+            # Make a test request to the API
+            logger.info(f"Validating token for base_url: {base_url}")
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Test with an empty batch upload request
+                response = await client.post(
+                    f"{base_url.rstrip('/')}/batch-upload",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"blobs": []},
+                )
+
+                if response.status_code == 200:
+                    logger.info("Token validation successful")
+                    return {"status": "success", "message": "Token is valid and working!"}
+                if response.status_code == 401:
+                    logger.warning("Token validation failed: Unauthorized")
+                    return {"status": "error", "message": "Token is invalid or expired (401 Unauthorized)"}
+                if response.status_code == 403:
+                    logger.warning("Token validation failed: Forbidden")
+                    return {"status": "error", "message": "Token does not have permission (403 Forbidden)"}
+                logger.warning(f"Token validation returned unexpected status: {response.status_code}")
+                return {"status": "error", "message": f"Unexpected response: {response.status_code} - {response.text[:100]}"}
+
+        except httpx.TimeoutException:
+            logger.warning("Token validation timed out")
+            return {"status": "error", "message": "Request timed out. Please check your BASE_URL"}
+        except httpx.ConnectError:
+            logger.warning("Token validation connection failed")
+            return {"status": "error", "message": "Cannot connect to the API. Please check your BASE_URL"}
+        except Exception as e:
+            logger.exception("Token validation failed with exception")
+            return {"status": "error", "message": f"Validation failed: {str(e)}"}
+
     @app.get("/api/tools")
     async def list_tools() -> dict:
         """List available tools for debugging.
 
         Returns:
             Dictionary containing available tools and their descriptions
+
         """
         return {
             "tools": [
@@ -166,6 +223,7 @@ def create_app() -> FastAPI:
 
         Returns:
             Tool execution result
+
         """
         try:
             from acemcp.tools import search_context_tool
@@ -206,5 +264,11 @@ def create_app() -> FastAPI:
         finally:
             log_broadcaster.remove_client(queue)
 
-    return app
+    @app.on_event("shutdown")
+    async def shutdown_tools() -> None:
+        """Release shared tool resources when the web app stops."""
+        from acemcp.tools import shutdown_index_manager
 
+        await shutdown_index_manager()
+
+    return app
